@@ -27,7 +27,8 @@ GRID_UPDATE = 'grid_update'
 GRID_INIT = 'grid_init'
 
 # Workers
-lock = Lock()
+exec_queue = Queue()
+event_queue = Queue()
 
 session = ccxt.ftx({
     'apiKey': os.getenv('FTX_KEY'),
@@ -141,93 +142,53 @@ def gridWorker(exec_queue, event_queue):
 def formatLog(obj):
     return json.dumps(obj, indent=4, sort_keys=True)
 
-class FtxWebsocket:
-    def __init__(self, event_queue):
-        self.ws = None
-        self.event_queue = event_queue;
+def on_open(ws):
+    print('Socket opened')
+    ts = int(time.time() * 1000)
+    ws.send(json.dumps({ 
+        'op': 'login',
+        'args': {
+            'key': os.getenv('FTX_KEY'),
+            'sign': hmac.new(
+                os.getenv('FTX_SECRET').encode(), f'{ts}websocket_login'.encode(), 'sha256').hexdigest(),
+            'time': ts,
+            'subaccount': os.getenv('FTX_SUBACCOUNT')
+        }
+    }))
+    ws.send(json.dumps({ 'op': 'subscribe', 'channel': 'orders' }))
 
-    def _wrap_callback(self, f):
-        def wrapped_f(ws, *args, **kwargs):
-            if ws is self.ws:
-                try:
-                    f(ws, *args, **kwargs)
-                except Exception as e:
-                    raise Exception(f'Error running websocket callback: {e}')
-        return wrapped_f
+def on_message(ws, raw):
+    message = json.loads(raw)
+    if (message['channel'] == 'orders' and message['type'] != 'subscribed'):
+        event_queue.put((GRID_UPDATE, message['data']))
 
-    def connect(self):
-        self.ws = websocket.WebSocketApp('wss://ftx.com/ws/',
-        on_open=self._wrap_callback(self.on_open),
-        on_message=self._wrap_callback(self.on_message),
-        on_close=self._wrap_callback(self.on_close),
-        on_error=self._wrap_callback(self.on_error))
-        # self.ws.run_forever(ping_interval=300, ping_timeout=30, ping_payload="ping")
-        self.ws.run_forever()
+def on_error(ws, error):
+    print(error)
+    connect_websocket(ws)
 
-    def login(self):
-        ts = int(time.time() * 1000)
-        self.send({ 
-            'op': 'login',
-            'args': {
-                'key': os.getenv('FTX_KEY'),
-                'sign': hmac.new(
-                    os.getenv('FTX_SECRET').encode(), f'{ts}websocket_login'.encode(), 'sha256').hexdigest(),
-                'time': ts,
-                'subaccount': os.getenv('FTX_SUBACCOUNT')
-            }
-        })
-        self.send({ 'op': 'subscribe', 'channel': 'orders' })
+def on_close(ws, close_status_code, close_msg):
+    print("Socket closed")
 
-    def reconnect(self, ws):
-        print('Reconnecting socket')
-        self.ws = None
-        self.ws.close()
-        self.connect()
+def forever(ws):
+    ws.run_forever(ping_interval=15, ping_timeout=14, ping_payload=json.dumps({ 'op': 'ping' }))
 
-    def on_message(self, ws, raw):
-        message = json.loads(raw)
-        if (message['channel'] == 'orders' and message['type'] != 'subscribed'):
-            self.event_queue.put((GRID_UPDATE, message['data']))
-
-    def on_error(self, ws, error):
-        print(error)
-        self.reconnect(ws)
-
-    def on_close(self, ws, close_status_code, close_msg):
-        print("Socket closed")
-        self.reconnect(ws)
-
-    def on_open(self, ws):
-        print('Socket opened')
-        self.login()
-
-    def on_ping(self, ws, message):
-        print("Ping !")
-
-    def on_pong(self, ws, message):
-        print("Pong !")
-
-    def send_json(self, message):
-        self.ws.send(json.dumps(message))
-
-    def send(self, message):
-        # self.connect()
-        self.send_json(message)
-
-def ftxWsWorker(event_queue):
-    # websocket.enableTrace(True)
-    ws = FtxWebsocket(event_queue)
-    ws.connect()
+def connect_websocket(event_queue):
+    ws = websocket.WebSocketApp('wss://ftx.com/ws/',
+        on_open=on_open,
+        on_message=on_message,
+        on_close=on_close,
+        on_error=on_error)
+    wst = Thread(target=forever, args=(ws, ))
+    wst.daemon = True
+    wst.start()
 
 if __name__ == '__main__':
 
     print(f'Starting service with following config :\n{formatLog(config)}')
-
-    exec_queue = Queue()
-    event_queue = Queue()
-    ws = Thread(target = ftxWsWorker, args=(event_queue, ))
-    ws.daemon = True
-    ws.start()
+    connect_websocket(event_queue)
+    # ws = Thread(target = ftxWsWorker, args=(event_queue, ))
+    # ws.daemon = True
+    # ws.start()
     rest = Thread(target = ftxRestWorker, args=(exec_queue, event_queue, ))
     rest.start()
     grid = Thread(target = gridWorker, args=(exec_queue, event_queue, ))
