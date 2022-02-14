@@ -1,4 +1,4 @@
-import json, os, time, hmac, websocket, copy
+import json, os, time, hmac, websocket
 import ccxt
 from threading import Thread, Lock
 from queue import Queue
@@ -27,6 +27,8 @@ GRID_UPDATE = 'grid_update'
 GRID_INIT = 'grid_init'
 
 # Workers
+lock = Lock()
+
 session = ccxt.ftx({
     'apiKey': os.getenv('FTX_KEY'),
     'secret': os.getenv('FTX_SECRET'),
@@ -62,41 +64,69 @@ def ftxRestWorker(exec_queue, event_queue):
                         session.createOrder(ex[1], 'market', side, position['info']['size'])
                 event_queue.put((REMOVE_MARKET_ORDER))
             elif (ex[0] == REMOVE_LIMIT_ORDER):
-                # TODO
+                session.cancelOrder(ex[1])
                 event_queue.put((REMOVE_LIMIT_ORDER))
             elif (ex[0] == REMOVE_ALL_LIMIT_ORDERS):
                 session.cancelAllOrders(ex[1])
                 event_queue.put((REMOVE_ALL_LIMIT_ORDERS))
-            time.sleep(0.3)
+            time.sleep(0.25)
         except Exception as e:
             print(f'An exception occurred : {e}')
 
 def gridWorker(exec_queue, event_queue):
-    orders = []
+    ticker = session.fetchTicker(config['market'])
+    minContractSize = float(ticker['info']['minProvideSize'])
     position = {}
     while True:
         event = event_queue.get()
         if (event[0] == ORDERS):
-            orders = event[1]
-            # TODO something with ordersc
+            if (position):
+                buyOrdersCount = float(position['longOrderSize']) / config['buyQty']
+                sellOrdersCount = float(position['shortOrderSize']) / config['sellQty']
+                minBuy = { 'price': float("inf") }
+                maxSell = { 'price': 0 }
+                for order in event[1]:
+                    if (order['info']['side'] == 'buy' and float(order['info']['price']) < float(minBuy['price'])):
+                        minBuy = order['info']
+                    elif (order['info']['side'] == 'sell' and float(order['info']['price']) > float(maxSell['price'])):
+                        maxSell = order['info']
+                if (buyOrdersCount > 0):
+                    if (buyOrdersCount < config['gridSize']):
+                        print('+ +')
+                        exec_queue.put((CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], float(minBuy['price']) - config['interval']))
+                    elif (buyOrdersCount > config['gridSize']):
+                        print('- +')
+                        exec_queue.put((REMOVE_LIMIT_ORDER, minBuy['id']))
+                if (sellOrdersCount > 0):
+                    if (sellOrdersCount < config['gridSize']):
+                        print('+ -')
+                        exec_queue.put((CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], float(maxSell['price']) + config['interval']))
+                    elif (sellOrdersCount > config['gridSize']):
+                        print('- -')
+                        exec_queue.put((REMOVE_LIMIT_ORDER, maxSell['id']))
         elif (event[0] == POSITION):
             # print(f'Current position {formatLog(event[1])}')
-            if not event[1] or event[1]['side'] == 'sell' or float(event[1]['netSize']) < config['buyQty']:
+            if not event[1] or event[1]['side'] == 'sell' or float(event[1]['netSize']) < minContractSize:
                 exec_queue.put((GRID_INIT, config['market']))
             else:
                 position = event[1]
-                print(position)
-            # if (position['netSize'] != event[1]['netSize']):
-            #     position = event[1]
-            #     print(json.dumps(position, indent=4, sort_keys=True))
-            #     print('Grid update needed')
+                # print(position)
         # elif (event[0] == LIMIT_ORDER):
             # print(f'Limit order placed {formatLog(event[1])}')
         # elif (event[0] == MARKET_ORDER):
             # print(f'Market bought {formatLog(event[1])}')
         elif (event[0] == GRID_UPDATE):
-            print(f'Event from websocket {formatLog(event[1])}')
+            # print(f'Event from websocket {formatLog(event[1])}')
+            if (event[1]['type'] == 'limit' and event[1]['status'] == 'closed' and event[1]['filledSize'] != 0):
+                # print(event[1])
+                if (event[1]['side'] == 'buy'):
+                    print('+')
+                    exec_queue.put((CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], event[1]['price'] + config['interval']))
+                elif (event[1]['side'] == 'sell'):
+                    print('-')
+                    exec_queue.put((CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], event[1]['price'] - config['interval']))
         elif (event[0] == GRID_INIT):
+            print('reset')
             # print(f'Ticker {formatLog(event[1])}')
             exec_queue.put((REMOVE_ALL_LIMIT_ORDERS, config['market']))
             exec_queue.put((REMOVE_MARKET_ORDER, config['market']))
@@ -107,7 +137,6 @@ def gridWorker(exec_queue, event_queue):
             for i in range(1, config['gridSize'] + 1):
                 exec_queue.put((CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], price - (config['interval'] * i)))
                 exec_queue.put((CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], price + (config['interval'] * i)))
-        # print(orders)
 
 def formatLog(obj):
     return json.dumps(obj, indent=4, sort_keys=True)
@@ -131,10 +160,9 @@ class FtxWebsocket:
         on_open=self._wrap_callback(self.on_open),
         on_message=self._wrap_callback(self.on_message),
         on_close=self._wrap_callback(self.on_close),
-        on_error=self._wrap_callback(self.on_error),
-        on_ping=self._wrap_callback(self.on_ping),
-        on_pong=self._wrap_callback(self.on_pong))
-        self.ws.run_forever(ping_interval=60, ping_timeout=10, ping_payload="ping")
+        on_error=self._wrap_callback(self.on_error))
+        # self.ws.run_forever(ping_interval=300, ping_timeout=30, ping_payload="ping")
+        self.ws.run_forever()
 
     def login(self):
         ts = int(time.time() * 1000)
@@ -152,11 +180,9 @@ class FtxWebsocket:
 
     def reconnect(self, ws):
         print('Reconnecting socket')
-        assert ws is not None, '_reconnect should only be called with an existing ws'
-        if ws is self.ws:
-            self.ws = None
-            ws.close()
-            self.connect()
+        self.ws = None
+        self.ws.close()
+        self.connect()
 
     def on_message(self, ws, raw):
         message = json.loads(raw)
@@ -206,8 +232,10 @@ if __name__ == '__main__':
     rest.start()
     grid = Thread(target = gridWorker, args=(exec_queue, event_queue, ))
     grid.start()
+    exec_queue.put((REMOVE_ALL_LIMIT_ORDERS, config['market']))
+    exec_queue.put((REMOVE_MARKET_ORDER, config['market']))
     while True:
-        # exec_exec_queue.put((ORDERS, config['market']))
-        exec_queue.put((POSITION, config['market']))
         time.sleep(5)
+        exec_queue.put((POSITION, config['market']))
+        exec_queue.put((ORDERS, config['market']))
         pass
