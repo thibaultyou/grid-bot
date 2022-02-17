@@ -1,7 +1,11 @@
-import collections, json, os, time, hmac
+import collections
+import json
+import os
+import time
+import hmac
+from threading import Thread, Lock
 import ccxt
 from websocket import WebSocketApp
-from threading import Thread, Lock
 from dotenv import load_dotenv
 
 # Config
@@ -25,6 +29,7 @@ REMOVE_LIMIT_ORDER = 'remove_limit_order'
 REMOVE_ALL_LIMIT_ORDERS = 'remove_all_limit_orders'
 GRID_UPDATE = 'grid_update'
 GRID_INIT = 'grid_init'
+GRID_RESET = 'grid_reset'
 
 # Workers
 exec_queue = collections.deque()
@@ -35,8 +40,9 @@ lock = Lock()
 sessions = [ccxt.ftx({
     'apiKey': os.getenv('FTX_KEY'),
     'secret': os.getenv('FTX_SECRET'),
-    'headers': { 'FTX-SUBACCOUNT': os.getenv('FTX_SUBACCOUNT') },
+    'headers': {'FTX-SUBACCOUNT': os.getenv('FTX_SUBACCOUNT')},
 })]
+
 
 def getSession():
     global lastIdUsed
@@ -50,7 +56,8 @@ def getSession():
             lastIdUsed = lastIdUsed + 1
             return sessions[lastIdUsed]
 
-def ftxRestWorker(exec_queue, event_queue):
+
+def ftxRestWorker():
     while True:
         if (len(exec_queue)):
             ex = exec_queue.popleft()
@@ -64,20 +71,40 @@ def ftxRestWorker(exec_queue, event_queue):
                         if ('info' in position and 'future' in position['info'] and position['info']['future'] == ex[1]):
                             event_queue.append((POSITION, position['info']))
                 elif (len(ex) == 4 and ex[0] == CREATE_MARKET_ORDER):
-                    order = getSession().createOrder(ex[1], 'market', ex[2], ex[3])
+                    order = getSession().createOrder(
+                        ex[1], 'market', ex[2], ex[3])
                     event_queue.append((CREATE_MARKET_ORDER, order))
                 elif (len(ex) == 5 and ex[0] == CREATE_LIMIT_ORDER):
-                    order = getSession().createOrder(ex[1], 'limit', ex[2], ex[3], ex[4])
+                    order = getSession().createOrder(
+                        ex[1], 'limit', ex[2], ex[3], ex[4])
                     event_queue.append((CREATE_LIMIT_ORDER, order))
                 elif (len(ex) == 2 and ex[0] == GRID_INIT):
+                    positions = getSession().fetchPositions()
+                    position = None
+                    # TODO improve
+                    for p in positions:
+                        if ('info' in p and 'future' in p['info'] and p['info']['future'] == ex[1]):
+                            position = p['info']
+                    time.sleep(0.25 / len(sessions))
                     ticker = getSession().fetchTicker(ex[1])
-                    event_queue.append((GRID_INIT, ticker))
+                    event_queue.append((GRID_INIT, ticker, position)) # TODO improve
+                elif (len(ex) == 2 and ex[0] == GRID_RESET):
+                    positions = getSession().fetchPositions()
+                    position = None
+                    # TODO improve
+                    for p in positions:
+                        if ('info' in p and 'future' in p['info'] and p['info']['future'] == ex[1]):
+                            position = p['info']
+                    time.sleep(0.25 / len(sessions))
+                    ticker = getSession().fetchTicker(ex[1])
+                    event_queue.append((GRID_INIT, ticker, position, True)) # TODO improve
                 elif (len(ex) == 2 and ex[0] == REMOVE_MARKET_ORDER):
                     positions = getSession().fetchPositions()
                     for position in positions:
                         if ('info' in position and 'side' in position['info'] and 'size' in position['info'] and 'future' in position['info'] and position['info']['future'] == ex[1]):
                             side = 'buy' if position['info']['side'] == 'sell' else 'sell'
-                            getSession().createOrder(ex[1], 'market', side, position['info']['size'])
+                            getSession().createOrder(
+                                ex[1], 'market', side, position['info']['size'])
                     event_queue.append((REMOVE_MARKET_ORDER))
                 elif (len(ex) == 2 and ex[0] == REMOVE_LIMIT_ORDER):
                     getSession().cancelOrder(ex[1])
@@ -89,7 +116,8 @@ def ftxRestWorker(exec_queue, event_queue):
             except Exception as e:
                 print(f'FtxRestWorker exception : {e}')
 
-def gridWorker(exec_queue, event_queue):
+
+def gridWorker():
     ticker = getSession().fetchTicker(config['market'])
     minContractSize = float(ticker['info']['minProvideSize'])
     position = {}
@@ -100,9 +128,6 @@ def gridWorker(exec_queue, event_queue):
             event = event_queue.popleft()
             # if (len(event) == 2):
             if (event[0] == ORDERS):
-
-                # TODO if no more buy / sell orders -> reset grid
-
                 # TODO if minSell - maxBuy > 2 * interval for N iterations -> add one order
 
                 if (position and 'longOrderSize' in position and 'shortOrderSize' in position):
@@ -117,55 +142,87 @@ def gridWorker(exec_queue, event_queue):
                                 sellOrders.append(order['info'])
                     buyOrdersCount = len(buyOrders)
                     sellOrdersCount = len(sellOrders)
-                    # Handle buy orders
-                    if (buyOrdersCount > 0):
-                        buyOrders.sort(key=lambda k : k['price'])
+
+                    if (buyOrdersCount < 1 or sellOrdersCount < 1):
+                        exec_queue.append((GRID_RESET, config['market']))
+                    else:
+                        # Handle buy orders
+                        buyOrders.sort(key=lambda k: k['price'])
                         minBuy = buyOrders[0]
-                        if ('price' in minBuy and lastOrder and 'price' in lastOrder and lastOrder['price']): # lastOrder['price'] can be None with market order
-                            expectedMinBuyOrderPrice = lastOrder['price'] - (config['gridSize'] * config['interval'])
+                        if ('price' in minBuy and lastOrder and 'price' in lastOrder and lastOrder['price']):
+                            expectedMinBuyOrderPrice = lastOrder['price'] - (
+                                config['gridSize'] * config['interval']) # TODO ensure this is working properly
                             minBuyOrderPrice = float(minBuy['price'])
-                            # TODO replace by a loop if many orders are missing ?
-                            if (expectedMinBuyOrderPrice < minBuyOrderPrice and minBuyOrderPrice - expectedMinBuyOrderPrice > config['interval'] + (config['interval'] * 0.05)):
-                                print('+ + added min buy order')
-                                exec_queue.append((CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], minBuyOrderPrice - config['interval']))
-                            # TODO improve
-                            elif (buyOrdersCount > config['gridSize'] and 'id' in minBuy):
-                                print('- + removed min buy order')
-                                exec_queue.append((REMOVE_LIMIT_ORDER, minBuy['id']))
+                            diff = minBuyOrderPrice - expectedMinBuyOrderPrice
+                            missingBuyOrders = int(diff / config['interval'])
+                            # Adding extreme buy orders
+                            if (missingBuyOrders > 0):
+                                for i in range(missingBuyOrders):
+                                    print('+ + added min buy')
+                                    exec_queue.append(
+                                        (CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], minBuyOrderPrice - (config['interval']) * (i + 1)))
+                            # Removing extreme buy orders # TODO loop ?
+                            elif (missingBuyOrders < 0 and 'id' in minBuy):
+                                print('- + removed min buy')
+                                exec_queue.append(
+                                    (REMOVE_LIMIT_ORDER, minBuy['id']))
                             lastSeenBuyOrder = None
                             for bo in buyOrders:
                                 if lastSeenBuyOrder:
-                                    diff = float(bo['price']) - float(lastSeenBuyOrder['price'])
-                                    margin = config['interval'] - (config['interval'] * 0.05)
-                                    if (diff < margin):
-                                        print('x + Removing misplaced / duplicated buy order')
-                                        exec_queue.append((REMOVE_LIMIT_ORDER, bo['id']))
-                                    # TODO add missing orders
+                                    lastBuyOrderPrice = float(lastSeenBuyOrder['price'])
+                                    diff = float(bo['price']) - lastBuyOrderPrice
+                                    # Filling buy orders gaps # TODO loop ?
+                                    if (diff > config['interval'] + \
+                                        (config['interval'] * 0.05)):
+                                        print('+ + filled buy gap')
+                                        exec_queue.append(
+                                    (CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], lastBuyOrderPrice + config['interval']))
+                                    # Removing duplicated buy orders
+                                    elif (diff < (config['interval'] * 0.05)):
+                                        print(
+                                            'x + removed duplicated buy')
+                                        exec_queue.append(
+                                            (REMOVE_LIMIT_ORDER, bo['id']))
                                 lastSeenBuyOrder = bo
-                    # Handle sell orders
-                    if (sellOrdersCount > 0):
-                        sellOrders.sort(key=lambda k : k['price'])
+                        # Handle sell orders
+                        sellOrders.sort(key=lambda k: k['price'])
                         maxSell = sellOrders[sellOrdersCount - 1]
                         if ('price' in maxSell and lastOrder and 'price' in lastOrder and lastOrder['price']):
-                            expectedMaxSellOrderPrice = lastOrder['price'] + (config['gridSize'] * config['interval'])
+                            expectedMaxSellOrderPrice = lastOrder['price'] + (
+                                config['gridSize'] * config['interval']) # TODO ensure this is working properly
                             maxSellOrderPrice = float(maxSell['price'])
-                            # TODO replace by a loop if many orders are missing ?
-                            if (expectedMaxSellOrderPrice > maxSellOrderPrice and expectedMaxSellOrderPrice - maxSellOrderPrice > config['interval'] + (config['interval'] * 0.05)):
-                                print('+ - added max sell order')
-                                exec_queue.append((CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], maxSellOrderPrice + config['interval']))
-                            # TODO improve
-                            elif (sellOrdersCount > config['gridSize'] and 'id' in maxSell):
-                                print('- - remove max sell order')
-                                exec_queue.append((REMOVE_LIMIT_ORDER, maxSell['id']))
+                            diff = expectedMaxSellOrderPrice - maxSellOrderPrice
+                            missingSellOrders = int(diff / config['interval'])
+                            # Adding extreme sell orders
+                            if (missingSellOrders > 0):
+                                for i in range(missingSellOrders):
+                                    print('+ - added max sell')
+                                    exec_queue.append(
+                                        (CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], maxSellOrderPrice + (config['interval']) * (i + 1)))
+                            # Removing extreme sell orders # TODO loop ?
+                            elif (missingSellOrders < 0 and 'id' in maxSell):
+                                print('- - remove max sell')
+                                exec_queue.append(
+                                    (REMOVE_LIMIT_ORDER, maxSell['id']))
                             lastSeenSellOrder = None
                             for so in sellOrders:
                                 if lastSeenSellOrder:
-                                    diff = float(so['price']) - float(lastSeenSellOrder['price'])
-                                    margin = config['interval'] + (config['interval'] * 0.05)
-                                    if (diff > margin):
-                                        print('x + Removing misplaced / duplicated sell order')
-                                        exec_queue.append((REMOVE_LIMIT_ORDER, bo['id']))
-                                    # TODO add missing orders
+                                    lastSellOrderPrice = float(lastSeenSellOrder['price'])
+                                    diff = float(
+                                        so['price']) - lastSellOrderPrice
+                                    
+                                    # Filling sell orders gaps # TODO loop ?
+                                    if (diff > config['interval'] + \
+                                        (config['interval'] * 0.05)):
+                                        print('- - filled sell gap')
+                                        exec_queue.append(
+                                    (CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], float(so['price']) - config['interval']))
+                                    # Removing duplicated sell orders
+                                    elif (diff < (config['interval'] * 0.05)):
+                                        print(
+                                            'x + removed duplicated sell')
+                                        exec_queue.append(
+                                            (REMOVE_LIMIT_ORDER, so['id']))
                                 lastSeenSellOrder = so
             elif (event[0] == CREATE_MARKET_ORDER):
                 if ('amount' in event[1]):
@@ -179,8 +236,8 @@ def gridWorker(exec_queue, event_queue):
                     position = event[1]
                     net = float(event[1]['netSize'])
                     if (amount != net):
+                        print(f'updating current amount ({amount} -> {net})')
                         amount = net
-                        print('diff between amount and live position')
                     # print(position)
             elif (event[0] == GRID_UPDATE):
                 # print(f'Event from websocket {formatLog(event[1])}')
@@ -189,39 +246,57 @@ def gridWorker(exec_queue, event_queue):
                     if (event[1]['side'] == 'buy'):
                         print('+ bought')
                         amount = amount + event[1]['filledSize']
-                        exec_queue.appendleft((CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], event[1]['price'] + config['interval']))
+                        exec_queue.appendleft(
+                            (CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], event[1]['price'] + config['interval']))
                     elif (event[1]['side'] == 'sell'):
                         print('- sold')
                         amount = amount - event[1]['filledSize']
                         if (amount < minContractSize):
-                            exec_queue.appendleft((GRID_INIT, config['market']))
+                            exec_queue.appendleft(
+                                (GRID_INIT, config['market']))
                         else:
-                            exec_queue.appendleft((CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], event[1]['price'] - config['interval']))
+                            exec_queue.appendleft(
+                                (CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], event[1]['price'] - config['interval']))
             elif (event[0] == GRID_INIT):
-                print('grid reset')
+                print('grid init')
                 event_queue.clear()
                 exec_queue.clear()
                 if ('ask' in event[1] and 'bid' in event[1]):
                     # print(f'Ticker {formatLog(event[1])}')
-                    exec_queue.append((REMOVE_ALL_LIMIT_ORDERS, config['market']))
-                    exec_queue.append((REMOVE_MARKET_ORDER, config['market']))
-                    time.sleep(3) # Let FTX remove all pending orders
-                    amount = 0
+                    exec_queue.append(
+                        (REMOVE_ALL_LIMIT_ORDERS, config['market']))
+                    if len(event) == 3:
+                        exec_queue.append((REMOVE_MARKET_ORDER, config['market']))
+                    time.sleep(1)  # Let FTX remove all pending orders
+                    
+                    # TODO improve
+                    if (event[2] and 'netSize' in event[2]):
+                        amount = float(event[2]['netSize'])
+                    else:
+                        amount = config['buyQty']
+                    print(f'init amount {amount}')
+                    
                     lastOrder = None
-                    exec_queue.append((CREATE_MARKET_ORDER, config['market'], 'buy', config['buyQty']))
+                    if len(event) == 3:
+                        exec_queue.append(
+                            (CREATE_MARKET_ORDER, config['market'], 'buy', config['buyQty']))
                     price = (event[1]['ask'] + event[1]['bid']) / 2
                     config['interval'] = price / 100 * config['gridStep']
                     for i in range(1, config['gridSize'] + 1):
-                        exec_queue.append((CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], price - (config['interval'] * i)))
-                        exec_queue.append((CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], price + (config['interval'] * i)))
+                        exec_queue.append(
+                            (CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], price - (config['interval'] * i)))
+                        exec_queue.append(
+                            (CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], price + (config['interval'] * i)))
+
 
 def formatLog(obj):
     return json.dumps(obj, indent=4, sort_keys=True)
 
+
 def on_open(ws):
     print('Socket opened')
     ts = int(time.time() * 1000)
-    ws.send(json.dumps({ 
+    ws.send(json.dumps({
         'op': 'login',
         'args': {
             'key': os.getenv('FTX_KEY'),
@@ -231,57 +306,66 @@ def on_open(ws):
             'subaccount': os.getenv('FTX_SUBACCOUNT')
         }
     }))
-    ws.send(json.dumps({ 'op': 'subscribe', 'channel': 'orders' }))
+    ws.send(json.dumps({'op': 'subscribe', 'channel': 'orders'}))
+
 
 def on_message(ws, raw):
     message = json.loads(raw)
     if (message['channel'] == 'orders' and message['type'] != 'subscribed'):
         event_queue.append((GRID_UPDATE, message['data']))
 
+
 def on_error(ws, error):
     print(error)
     ftxWebsocketWorker(ws)
 
+
 def on_close(ws, close_status_code, close_msg):
     print("Socket closed")
 
+
 def ftxWebsocketWorker(ws):
     try:
-        ws.run_forever(ping_interval=15, ping_timeout=14, ping_payload=json.dumps({ 'op': 'ping' }))
+        ws.run_forever(ping_interval=15, ping_timeout=14,
+                       ping_payload=json.dumps({'op': 'ping'}))
     except Exception as e:
         print(f'FtxSocketWorker exception : {e}')
 
-def positionStateWorker(exec_queue):
+
+def positionStateWorker():
     while True:
         exec_queue.append((POSITION, config['market']))
         time.sleep(5)
 
-def ordersStateWorker(exec_queue):
+
+def ordersStateWorker():
     while True:
         exec_queue.append((ORDERS, config['market']))
         time.sleep(5)
 
+
 if __name__ == '__main__':
+
+    assert len(sessions) > 0
 
     print(f'Starting service with following config :\n{formatLog(config)}')
 
     ws = WebSocketApp('wss://ftx.com/ws/',
-        on_open=on_open,
-        on_message=on_message,
-        on_close=on_close,
-        on_error=on_error)
-    wst = Thread(target = ftxWebsocketWorker, args=(ws, ))
+                      on_open=on_open,
+                      on_message=on_message,
+                      on_close=on_close,
+                      on_error=on_error)
+    wst = Thread(target=ftxWebsocketWorker, args=(ws, ))
     wst.daemon = True
-    rwt = Thread(target = ftxRestWorker)
-    pwt = Thread(target = positionStateWorker)
-    owt = Thread(target = ordersStateWorker)
-    gwt = Thread(target = gridWorker)
+    rwt = Thread(target=ftxRestWorker)
+    pwt = Thread(target=positionStateWorker)
+    owt = Thread(target=ordersStateWorker)
+    gwt = Thread(target=gridWorker)
     wst.start()
     rwt.start()
     pwt.start()
     owt.start()
     gwt.start()
     exec_queue.append((REMOVE_ALL_LIMIT_ORDERS, config['market']))
-    exec_queue.append((REMOVE_MARKET_ORDER, config['market']))
     while True:
         pass
