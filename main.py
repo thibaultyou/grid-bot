@@ -8,6 +8,7 @@ import ccxt
 from websocket import WebSocketApp
 from dotenv import load_dotenv
 
+
 # Config
 load_dotenv()
 
@@ -38,8 +39,20 @@ event_queue = collections.deque()
 lastIdUsed = 0
 lock = Lock()
 sessions = [ccxt.ftx({
-    'apiKey': os.getenv('FTX_KEY'),
-    'secret': os.getenv('FTX_SECRET'),
+    'apiKey': os.getenv('FTX_KEY_1'),
+    'secret': os.getenv('FTX_SECRET_1'),
+    'headers': {'FTX-SUBACCOUNT': os.getenv('FTX_SUBACCOUNT')},
+}), ccxt.ftx({
+    'apiKey': os.getenv('FTX_KEY_2'),
+    'secret': os.getenv('FTX_SECRET_2'),
+    'headers': {'FTX-SUBACCOUNT': os.getenv('FTX_SUBACCOUNT')},
+}), ccxt.ftx({
+    'apiKey': os.getenv('FTX_KEY_3'),
+    'secret': os.getenv('FTX_SECRET_3'),
+    'headers': {'FTX-SUBACCOUNT': os.getenv('FTX_SUBACCOUNT')},
+}), ccxt.ftx({
+    'apiKey': os.getenv('FTX_KEY_4'),
+    'secret': os.getenv('FTX_SECRET_4'),
     'headers': {'FTX-SUBACCOUNT': os.getenv('FTX_SUBACCOUNT')},
 })]
 
@@ -78,7 +91,7 @@ def ftxRestWorker():
                     order = getSession().createOrder(
                         ex[1], 'limit', ex[2], ex[3], ex[4])
                     event_queue.append((CREATE_LIMIT_ORDER, order))
-                elif (len(ex) == 2 and ex[0] == GRID_INIT):
+                elif (len(ex) == 2 and (ex[0] == GRID_INIT or ex[0] == GRID_RESET)):
                     positions = getSession().fetchPositions()
                     position = None
                     # TODO improve
@@ -87,17 +100,10 @@ def ftxRestWorker():
                             position = p['info']
                     time.sleep(0.25 / len(sessions))
                     ticker = getSession().fetchTicker(ex[1])
-                    event_queue.append((GRID_INIT, ticker, position)) # TODO improve
-                elif (len(ex) == 2 and ex[0] == GRID_RESET):
-                    positions = getSession().fetchPositions()
-                    position = None
-                    # TODO improve
-                    for p in positions:
-                        if ('info' in p and 'future' in p['info'] and p['info']['future'] == ex[1]):
-                            position = p['info']
-                    time.sleep(0.25 / len(sessions))
-                    ticker = getSession().fetchTicker(ex[1])
-                    event_queue.append((GRID_INIT, ticker, position, True)) # TODO improve
+                    if (ex[0] == GRID_RESET):
+                        event_queue.append((GRID_INIT, ticker, position, True))
+                    else:
+                        event_queue.append((GRID_INIT, ticker, position))
                 elif (len(ex) == 2 and ex[0] == REMOVE_MARKET_ORDER):
                     positions = getSession().fetchPositions()
                     for position in positions:
@@ -122,13 +128,19 @@ def gridWorker():
     minContractSize = float(ticker['info']['minProvideSize'])
     position = {}
     amount = 0
+    margin = 0
     lastOrder = None
     while True:
         if (len(event_queue)):
             event = event_queue.popleft()
             # if (len(event) == 2):
             if (event[0] == ORDERS):
-                # TODO if minSell - maxBuy > 2 * interval for N iterations -> add one order
+                
+                # TODO handle network failures
+                
+                # TODO avoid running grid init multiple times (lock, counter ?)
+                
+                # TODO change static interval / margin to dynamic
 
                 if (position and 'longOrderSize' in position and 'shortOrderSize' in position):
                     # Get current orders state
@@ -172,13 +184,12 @@ def gridWorker():
                                     lastBuyOrderPrice = float(lastSeenBuyOrder['price'])
                                     diff = float(bo['price']) - lastBuyOrderPrice
                                     # Filling buy orders gaps # TODO loop ?
-                                    if (diff > config['interval'] + \
-                                        (config['interval'] * 0.05)):
+                                    if (diff > config['interval'] + margin):
                                         print('+ + filled buy gap')
                                         exec_queue.append(
                                     (CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], lastBuyOrderPrice + config['interval']))
                                     # Removing duplicated buy orders
-                                    elif (diff < (config['interval'] * 0.05)):
+                                    elif (diff < margin):
                                         print(
                                             'x + removed duplicated buy')
                                         exec_queue.append(
@@ -210,15 +221,13 @@ def gridWorker():
                                     lastSellOrderPrice = float(lastSeenSellOrder['price'])
                                     diff = float(
                                         so['price']) - lastSellOrderPrice
-                                    
                                     # Filling sell orders gaps # TODO loop ?
-                                    if (diff > config['interval'] + \
-                                        (config['interval'] * 0.05)):
+                                    if (diff > config['interval'] + margin):
                                         print('- - filled sell gap')
                                         exec_queue.append(
                                     (CREATE_LIMIT_ORDER, config['market'], 'sell', config['sellQty'], float(so['price']) - config['interval']))
                                     # Removing duplicated sell orders
-                                    elif (diff < (config['interval'] * 0.05)):
+                                    elif (diff < margin):
                                         print(
                                             'x + removed duplicated sell')
                                         exec_queue.append(
@@ -267,7 +276,7 @@ def gridWorker():
                         (REMOVE_ALL_LIMIT_ORDERS, config['market']))
                     if len(event) == 3:
                         exec_queue.append((REMOVE_MARKET_ORDER, config['market']))
-                    time.sleep(1)  # Let FTX remove all pending orders
+                    time.sleep(2)  # Let FTX remove all pending orders
                     
                     # TODO improve
                     if (event[2] and 'netSize' in event[2]):
@@ -282,6 +291,7 @@ def gridWorker():
                             (CREATE_MARKET_ORDER, config['market'], 'buy', config['buyQty']))
                     price = (event[1]['ask'] + event[1]['bid']) / 2
                     config['interval'] = price / 100 * config['gridStep']
+                    margin = config['interval'] * 0.05
                     for i in range(1, config['gridSize'] + 1):
                         exec_queue.append(
                             (CREATE_LIMIT_ORDER, config['market'], 'buy', config['buyQty'], price - (config['interval'] * i)))
@@ -292,44 +302,111 @@ def gridWorker():
 def formatLog(obj):
     return json.dumps(obj, indent=4, sort_keys=True)
 
+class WebsocketManager:
+    _CONNECT_TIMEOUT_S = 5
 
-def on_open(ws):
-    print('Socket opened')
-    ts = int(time.time() * 1000)
-    ws.send(json.dumps({
-        'op': 'login',
-        'args': {
-            'key': os.getenv('FTX_KEY'),
-            'sign': hmac.new(
-                os.getenv('FTX_SECRET').encode(), f'{ts}websocket_login'.encode(), 'sha256').hexdigest(),
-            'time': ts,
-            'subaccount': os.getenv('FTX_SUBACCOUNT')
-        }
-    }))
-    ws.send(json.dumps({'op': 'subscribe', 'channel': 'orders'}))
+    def __init__(self):
+        self.connect_lock = Lock()
+        self.ws = None
 
+    def _get_url(self):
+        raise NotImplementedError()
 
-def on_message(ws, raw):
-    message = json.loads(raw)
-    if (message['channel'] == 'orders' and message['type'] != 'subscribed'):
-        event_queue.append((GRID_UPDATE, message['data']))
+    def _on_message(self, ws, raw):
+        message = json.loads(raw)
+        if (message['channel'] == 'orders' and message['type'] != 'subscribed'):
+            event_queue.append((GRID_UPDATE, message['data']))
 
+    def send(self, message):
+        self.connect()
+        self.ws.send(message)
 
-def on_error(ws, error):
-    print(error)
-    ftxWebsocketWorker(ws)
+    def send_json(self, message):
+        self.send(json.dumps(message))
 
+    def _connect(self):
+        assert not self.ws, "ws should be closed before attempting to connect"
 
-def on_close(ws, close_status_code, close_msg):
-    print("Socket closed")
+        self.ws = WebSocketApp(
+            'wss://ftx.com/ws/',
+            on_open=self._wrap_callback(self.on_open),
+            on_message=self._wrap_callback(self._on_message),
+            on_close=self._wrap_callback(self._on_close),
+            on_error=self._wrap_callback(self._on_error),
+        )
 
+        wst = Thread(target=self._run_websocket, args=(self.ws,))
+        wst.daemon = True
+        wst.start()
 
-def ftxWebsocketWorker(ws):
-    try:
-        ws.run_forever(ping_interval=15, ping_timeout=14,
-                       ping_payload=json.dumps({'op': 'ping'}))
-    except Exception as e:
-        print(f'FtxSocketWorker exception : {e}')
+        # Wait for socket to connect
+        ts = time.time()
+        while self.ws and (not self.ws.sock or not self.ws.sock.connected):
+            if time.time() - ts > self._CONNECT_TIMEOUT_S:
+                self.ws = None
+                return
+            time.sleep(0.1)
+
+    def _wrap_callback(self, f):
+        def wrapped_f(ws, *args, **kwargs):
+            if ws is self.ws:
+                try:
+                    f(ws, *args, **kwargs)
+                except Exception as e:
+                    raise Exception(f'Error running websocket callback: {e}')
+        return wrapped_f
+
+    def _run_websocket(self, ws):
+        try:
+            ws.run_forever(ping_interval=15, ping_timeout=14,
+                    ping_payload=json.dumps({'op': 'ping'}))
+        except Exception as e:
+            raise Exception(f'Unexpected error while running websocket: {e}')
+        finally:
+            self._reconnect(ws)
+
+    def _reconnect(self, ws):
+        assert ws is not None, '_reconnect should only be called with an existing ws'
+        if ws is self.ws:
+            self.ws = None
+            ws.close()
+            self.connect()
+
+    def connect(self):
+        if self.ws:
+            return
+        with self.connect_lock:
+            while not self.ws:
+                self._connect()
+                if self.ws:
+                    return
+
+    def on_open(self, ws):
+        print('Socket opened')
+        ts = int(time.time() * 1000)
+        ws.send(json.dumps({
+            'op': 'login',
+            'args': {
+                'key': os.getenv('FTX_KEY_1'),
+                'sign': hmac.new(
+                    os.getenv('FTX_SECRET_1').encode(), f'{ts}websocket_login'.encode(), 'sha256').hexdigest(),
+                'time': ts,
+                'subaccount': os.getenv('FTX_SUBACCOUNT')
+            }
+        }))
+        ws.send(json.dumps({'op': 'subscribe', 'channel': 'orders'}))
+
+    def _on_close(self, ws):
+        print('Socket closed')
+        self._reconnect(ws)
+
+    def _on_error(self, ws, error):
+        print(f'Socket error : {error}')
+        self._reconnect(ws)
+
+    def reconnect(self) -> None:
+        if self.ws is not None:
+            self._reconnect(self.ws)
 
 
 def positionStateWorker():
@@ -341,7 +418,7 @@ def positionStateWorker():
 def ordersStateWorker():
     while True:
         exec_queue.append((ORDERS, config['market']))
-        time.sleep(5)
+        time.sleep(8)
 
 
 if __name__ == '__main__':
@@ -350,18 +427,12 @@ if __name__ == '__main__':
 
     print(f'Starting service with following config :\n{formatLog(config)}')
 
-    ws = WebSocketApp('wss://ftx.com/ws/',
-                      on_open=on_open,
-                      on_message=on_message,
-                      on_close=on_close,
-                      on_error=on_error)
-    wst = Thread(target=ftxWebsocketWorker, args=(ws, ))
-    wst.daemon = True
+    wsm = WebsocketManager()
+    wsm.connect()
     rwt = Thread(target=ftxRestWorker)
     pwt = Thread(target=positionStateWorker)
     owt = Thread(target=ordersStateWorker)
     gwt = Thread(target=gridWorker)
-    wst.start()
     rwt.start()
     pwt.start()
     owt.start()

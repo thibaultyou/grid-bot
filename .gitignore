@@ -2,3 +2,5 @@
 env
 # Dotenv
 .env
+# VSCode
+.vscode
