@@ -2,6 +2,4 @@ version: "3.9"
 services:
   grid-service:
     build: .
-    volumes:
-      - .:/code
     restart: unless-stopped
