@@ -1,18 +1,16 @@
 from threading import Thread
 import time
 from src.config import CONFIG
-from src.events import ORDERS
+from src.events import ORDERS, fire_event
 
 
 class OrdersWorker:
 
-    def start(self, exec_queue):
-        t = Thread(target=self._run, args=(exec_queue,))
+    def start(self, executions):
+        t = Thread(target=self._run, args=(executions,))
         t.start()
     
-    def _run(self, exec_queue):
-        exec = (ORDERS, CONFIG['market'])
+    def _run(self, executions):
         while True:
-            if (exec not in exec_queue):
-                exec_queue.append(exec)
+            fire_event(executions, (ORDERS, CONFIG['market']))
             time.sleep(5)

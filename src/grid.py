@@ -1,180 +1,167 @@
 import logging
 import time
 from threading import Thread
-from src.log import format_log
 from src.config import CONFIG
-from src.events import CREATE_LIMIT_ORDER, CREATE_MARKET_ORDER, GRID_INIT, GRID_INIT_COMPLETED, GRID_RESET, GRID_UPDATE, ORDERS, POSITION, REMOVE_ALL_LIMIT_ORDERS, REMOVE_LIMIT_ORDER, REMOVE_MARKET_ORDER
+from src.events import CREATE_LIMIT_ORDER, CREATE_MARKET_ORDER, GRID_INIT, GRID_RESET, GRID_UPDATE, ORDERS, POSITION, REMOVE_ALL_LIMIT_ORDERS, REMOVE_LIMIT_ORDER, REMOVE_MARKET_ORDER, fire_event, fire_event_asap
 from src.sessions import get_session
 
 
 class GridWorker:
 
-    def start(self, exec_queue, event_queue):
-        t = Thread(target=self._run, args=(exec_queue, event_queue))
+    def start(self, executions, events):
+        t = Thread(target=self._run, args=(executions, events))
         t.start()
     
-    def _run(self, exec_queue, event_queue):
-        ticker = get_session().fetchTicker(CONFIG['market'])
-        minContractSize = float(ticker['info']['minProvideSize'])
+    def _run(self, executions, events):
+        market = CONFIG['market']
+        gridSize = CONFIG['gridSize']
+        buyQty = CONFIG['buyQty']
+        sellQty = CONFIG['sellQty']
+        ticker = get_session().fetchTicker(market)
+        minOrderSize = float(ticker['info']['minProvideSize'])
         position = {}
         amount = 0
+        interval = 0
         margin = 0
         lastOrder = None
         while True:
-            if (len(event_queue)):
-                event = event_queue.popleft()
-                if (event[0] == ORDERS):
+            if (len(events)):
+                event = events.popleft()
+                eventType = event[0]
+                if (eventType == ORDERS):
+                    orders = event[1]
                     if (position and 'longOrderSize' in position and 'shortOrderSize' in position):
-                        # Get current orders state
-                        buyOrders = []
-                        sellOrders = []
-                        for order in event[1]:
+                        # Refresh current orders state
+                        buys = []
+                        sells = []
+                        for order in orders:
                             if ('info' in order and 'side' in order['info']):
                                 if (order['info']['side'] == 'buy'):
-                                    buyOrders.append(order['info'])
+                                    buys.append(order['info'])
                                 elif (order['info']['side'] == 'sell'):
-                                    sellOrders.append(order['info'])
-                        buyOrdersCount = len(buyOrders)
-                        sellOrdersCount = len(sellOrders)
-                        if (buyOrdersCount < 1 or sellOrdersCount < 1):
-                            exec_queue.appendleft((GRID_RESET, CONFIG['market']))
+                                    sells.append(order['info'])
+                        if (len(buys) < 1 or len(sells) < 1):
+                            fire_event_asap(executions, (GRID_RESET, market))
                         else:
                             # Handle buy orders
-                            buyOrders.sort(key=lambda k: k['price'])
-                            minBuy = buyOrders[0]
+                            buys.sort(key=lambda k: k['price'])
+                            minBuy = buys[0]
                             if ('price' in minBuy and lastOrder and 'price' in lastOrder and lastOrder['price']):
-                                minBuyOrderPrice = float(minBuy['price'])
+                                minBuyPrice = float(minBuy['price'])
                                 # Adding extreme buy orders
-                                if (buyOrdersCount < CONFIG['gridSize']):
-                                    for i in range(CONFIG['gridSize'] - buyOrdersCount):
-                                        price = minBuyOrderPrice - ((CONFIG['interval']) * (i + 1))
-                                        logging.info(f'Adding minimum {CONFIG["market"]} buy order at {price} $')
-                                        exec = (CREATE_LIMIT_ORDER, CONFIG['market'], 'buy', CONFIG['buyQty'], price)
-                                        if (exec not in exec_queue):
-                                            exec_queue.append(exec)
+                                if (len(buys) < gridSize):
+                                    for i in range(gridSize - len(buys)):
+                                        orderPrice = minBuyPrice - (interval * (i + 1))
+                                        logging.info(f'Adding minimum {market} buy order at {orderPrice} $')
+                                        fire_event(executions, (CREATE_LIMIT_ORDER, market, 'buy', buyQty, orderPrice))
                                 # Removing extreme buy orders
-                                elif (buyOrdersCount > CONFIG['gridSize'] and 'id' in minBuy):
-                                    for i in range(buyOrdersCount - CONFIG['gridSize']):
-                                        logging.info(f'Removing minimum {CONFIG["market"]} buy order at {buyOrders[i]["price"]} $')
-                                        exec = (REMOVE_LIMIT_ORDER, buyOrders[i]['id'])
-                                        if (exec not in exec_queue):
-                                            exec_queue.append(exec)
-                                lastSeenBuyOrder = None
-                                for bo in buyOrders:
-                                    if lastSeenBuyOrder:
-                                        lastBuyOrderPrice = float(lastSeenBuyOrder['price'])
-                                        diff = float(bo['price']) - lastBuyOrderPrice
+                                elif (len(buys) > gridSize and 'id' in minBuy):
+                                    for i in range(len(buys) - gridSize):
+                                        logging.info(f'Removing minimum {market} buy order at {buys[i]["price"]} $')
+                                        fire_event(executions, (REMOVE_LIMIT_ORDER, buys[i]['id']))
+                                lastBuy = None
+                                for bo in buys:
+                                    if lastBuy:
+                                        lastBuyPrice = float(lastBuy['price'])
+                                        diff = float(bo['price']) - lastBuyPrice
                                         # Filling buy orders gaps
-                                        if (diff > CONFIG['interval'] + margin):
-                                            price = lastBuyOrderPrice + CONFIG['interval']
-                                            logging.info(f'Adding missing {CONFIG["market"]} buy order at {price} $')
-                                            exec = (CREATE_LIMIT_ORDER, CONFIG['market'], 'buy', CONFIG['buyQty'], price)
-                                            if (exec not in exec_queue):
-                                                exec_queue.append(exec)
+                                        if (diff > interval + margin):
+                                            orderPrice = lastBuyPrice + interval
+                                            logging.info(f'Adding missing {market} buy order at {orderPrice} $')
+                                            fire_event(executions, (CREATE_LIMIT_ORDER, market, 'buy', buyQty, orderPrice))
                                         # Removing duplicated buy orders
-                                        elif (diff < CONFIG['interval'] - margin):
-                                            logging.info(f'Removing misplaced {CONFIG["market"]} buy order at {lastBuyOrderPrice} $')
-                                            exec = (REMOVE_LIMIT_ORDER, bo['id'])
-                                            if (exec not in exec_queue):
-                                                exec_queue.append(exec)
-                                    lastSeenBuyOrder = bo
+                                        elif (diff < interval - margin):
+                                            logging.info(f'Removing misplaced {market} buy order at {lastBuyPrice} $')
+                                            fire_event(executions, (REMOVE_LIMIT_ORDER, bo['id']))
+                                    lastBuy = bo
                             # Handle sell orders
-                            sellOrders.sort(key=lambda k: k['price'])
-                            maxSell = sellOrders[sellOrdersCount - 1]
+                            sells.sort(key=lambda k: k['price'])
+                            maxSell = sells[len(sells) - 1]
                             if ('price' in maxSell and lastOrder and 'price' in lastOrder and lastOrder['price']):
-                                maxSellOrderPrice = float(maxSell['price'])
+                                maxSellPrice = float(maxSell['price'])
                                 # Adding extreme sell orders
-                                if (sellOrdersCount < CONFIG['gridSize']):
-                                    for i in range(CONFIG['gridSize'] - sellOrdersCount):
-                                        price = maxSellOrderPrice + ((CONFIG['interval']) * (i + 1))
-                                        logging.info(f'Adding maximum {CONFIG["market"]} sell order at {price} $')
-                                        exec = (CREATE_LIMIT_ORDER, CONFIG['market'], 'sell', CONFIG['sellQty'], price)
-                                        if (exec not in exec_queue):
-                                            exec_queue.append(exec)
+                                if (len(sells) < gridSize):
+                                    for i in range(gridSize - len(sells)):
+                                        orderPrice = maxSellPrice + ((interval) * (i + 1))
+                                        logging.info(f'Adding maximum {market} sell order at {orderPrice} $')
+                                        fire_event(executions, (CREATE_LIMIT_ORDER, market, 'sell', sellQty, orderPrice))
                                 # Removing extreme sell orders
-                                elif (sellOrdersCount > CONFIG['gridSize'] and 'id' in maxSell):
-                                    for i in range(sellOrdersCount - CONFIG['gridSize']):
-                                        logging.info(f'Removing maximum {CONFIG["market"]} sell order at {sellOrders[i]["price"]} $')
-                                        exec = (REMOVE_LIMIT_ORDER, maxSell['id'])
-                                        if (exec not in exec_queue):
-                                            exec_queue.append(exec)
-                                lastSeenSellOrder = None
-                                for so in sellOrders:
-                                    if lastSeenSellOrder:
-                                        lastSellOrderPrice = float(lastSeenSellOrder['price'])
-                                        diff = float(so['price']) - lastSellOrderPrice
+                                elif (len(sells) > gridSize and 'id' in maxSell):
+                                    for i in range(len(sells) - gridSize):
+                                        logging.info(f'Removing maximum {market} sell order at {sells[i]["price"]} $')
+                                        fire_event(executions, (REMOVE_LIMIT_ORDER, maxSell['id']))
+                                lastSell = None
+                                for so in sells:
+                                    if lastSell:
+                                        lastSellPrice = float(lastSell['price'])
+                                        diff = float(so['price']) - lastSellPrice
                                         # Filling sell orders gaps
-                                        if (diff > CONFIG['interval'] + margin):
-                                            price = float(so['price']) - CONFIG['interval']
-                                            logging.info(f'Adding missing {CONFIG["market"]} sell order at {price} $')
-                                            exec = (CREATE_LIMIT_ORDER, CONFIG['market'], 'sell', CONFIG['sellQty'], price)
-                                            if (exec not in exec_queue):
-                                                exec_queue.append(exec)
+                                        if (diff > interval + margin):
+                                            orderPrice = float(so['price']) - interval
+                                            logging.info(f'Adding missing {market} sell order at {orderPrice} $')
+                                            fire_event(executions, (CREATE_LIMIT_ORDER, market, 'sell', sellQty, orderPrice))
                                         # Removing duplicated sell orders
-                                        elif (diff < CONFIG['interval'] - margin):
-                                            logging.info(f'Removing misplaced {CONFIG["market"]} sell order at {lastSellOrderPrice} $')
-                                            exec = (REMOVE_LIMIT_ORDER, so['id'])
-                                            if (exec not in exec_queue):
-                                                exec_queue.append(exec)
-                                    lastSeenSellOrder = so
-                elif (event[0] == CREATE_MARKET_ORDER):
+                                        elif (diff < interval - margin):
+                                            logging.info(f'Removing misplaced {market} sell order at {lastSellPrice} $')
+                                            fire_event(executions, (REMOVE_LIMIT_ORDER, so['id']))
+                                    lastSell = so
+                elif (eventType == CREATE_MARKET_ORDER):
                     if ('amount' in event[1]):
                         amount = amount + event[1]['amount']
                         lastOrder = event[1]
-                elif (event[0] == POSITION):
-                    # print(f'Current position {format_log(event[1])}')
-                    if not event[1] or ('side' in event[1] and event[1]['side'] == 'sell') or ('netSize' in event[1] and float(event[1]['netSize']) < minContractSize):
-                        exec = (GRID_INIT, CONFIG['market'])
-                        if (exec not in exec_queue):
-                            exec_queue.appendleft(exec)
+                elif (eventType == POSITION):
+                    position = event[1]
+                    if not position or ('side' in position and position['side'] == 'sell') or ('netSize' in position and float(position['netSize']) < minOrderSize):
+                        fire_event_asap(executions, (GRID_INIT, market))
                     else:
-                        position = event[1]
-                        net = float(event[1]['netSize'])
-                        if (amount != net):
-                            logging.info(f'Updating current {CONFIG["market"]} position from {amount} to {net} {CONFIG["market"]}')
-                            amount = net
-                elif (event[0] == GRID_UPDATE):
-                    if ('type' in event[1] and 'side' in event[1] and 'status' in event[1] and 'filledSize' in event[1] and event[1]['type'] == 'limit' and event[1]['status'] == 'closed' and event[1]['filledSize'] != 0):
-                        # print(f'Event from websocket {format_log(event[1])}, {amount}, {minContractSize}')
-                        lastOrder = event[1]
-                        if (amount < minContractSize):
-                            logging.info(f'Current {CONFIG["market"]} position is under minimum contract size ({minContractSize} {CONFIG["market"]})')
-                            exec = (GRID_INIT, CONFIG['market'])
-                            if (exec not in exec_queue):
-                                exec_queue.appendleft(exec)
+                        netSize = float(position['netSize'])
+                        if (amount != netSize):
+                            logging.info(f'Updating current {market} position from {amount} to {netSize} {market}')
+                            amount = netSize
+                elif (eventType == GRID_UPDATE):
+                    order = event[1]
+                    if ('type' in order and 'side' in order and 'price' in order and 'status' in order and 'filledSize' in order and order['type'] == 'limit' and order['status'] == 'closed' and order['filledSize'] != 0):
+                        lastOrder = order
+                        if (amount < minOrderSize):
+                            logging.info(f'Current {market} position is under minimum contract size ({minOrderSize} {market})')
+                            fire_event_asap(executions, (GRID_INIT, market))
                         else:
-                            if (event[1]['side'] == 'buy'):
-                                amount = amount + event[1]['filledSize']
-                                logging.info(f'Bought {CONFIG["market"]} at {event[1]["price"]} $, current position is {amount} {CONFIG["market"]}')
-                                exec_queue.appendleft((CREATE_LIMIT_ORDER, CONFIG['market'], 'sell', CONFIG['sellQty'], event[1]['price'] + CONFIG['interval']))
-                            elif (event[1]['side'] == 'sell'):
-                                amount = amount - event[1]['filledSize']
-                                logging.info(f'Sold {CONFIG["market"]} at {event[1]["price"]} $, current position is {amount} {CONFIG["market"]}')
-                                exec_queue.appendleft((CREATE_LIMIT_ORDER, CONFIG['market'], 'buy', CONFIG['buyQty'], event[1]['price'] - CONFIG['interval']))
-                elif (event[0] == GRID_INIT):
-                    logging.info(f'{CONFIG["market"]} grid init')
-                    event_queue.clear()
-                    exec_queue.clear()
-                    if ('ask' in event[1] and 'bid' in event[1]):
-                        # print(f'Ticker {formatLog(event[1])}')
-                        exec_queue.append((REMOVE_ALL_LIMIT_ORDERS, CONFIG['market']))
+                            filledSize = order['filledSize']
+                            orderPrice = order['price']
+                            if (order['side'] == 'buy'):
+                                amount = amount + filledSize
+                                logging.info(f'Bought {filledSize} {market} at {orderPrice} $, current position is {amount} {market}')
+                                executions.appendleft((CREATE_LIMIT_ORDER, market, 'sell', sellQty, orderPrice + interval))
+                            elif (order['side'] == 'sell'):
+                                amount = amount - filledSize
+                                logging.info(f'Sold {filledSize} {market} at {orderPrice} $, current position is {amount} {market}')
+                                executions.appendleft((CREATE_LIMIT_ORDER, market, 'buy', buyQty, orderPrice - interval))
+                elif (eventType == GRID_INIT):
+                    logging.info(f'Initializing {market} grid')
+                    ticker = event[1]
+                    position = event[2]
+                    events.clear()
+                    executions.clear()
+                    if ('ask' in ticker and 'bid' in ticker):
+                        executions.append((REMOVE_ALL_LIMIT_ORDERS, market))
                         if len(event) == 3:
-                            exec_queue.append((REMOVE_MARKET_ORDER, CONFIG['market']))
+                            if (position and 'netSize' in position):
+                                logging.info(f'Market selling {position["netSize"]} {market}')
+                            executions.append((REMOVE_MARKET_ORDER, market))
                         time.sleep(2)  # Let FTX remove all pending orders
-                        
                         # TODO improve
-                        if (event[2] and 'netSize' in event[2]):
-                            amount = float(event[2]['netSize'])
+                        if (position and 'netSize' in position):
+                            amount = float(position['netSize'])
                         else:
                             amount = 0
-
                         lastOrder = None
+                        price = (ticker['ask'] + ticker['bid']) / 2
                         if len(event) == 3:
-                            exec_queue.append((CREATE_MARKET_ORDER, CONFIG['market'], 'buy', CONFIG['buyQty']))
-                        price = (event[1]['ask'] + event[1]['bid']) / 2
-                        CONFIG['interval'] = price / 100 * CONFIG['gridStep']
-                        margin = CONFIG['interval'] * 0.05
-                        for i in range(1, CONFIG['gridSize'] + 1):
-                            exec_queue.append((CREATE_LIMIT_ORDER, CONFIG['market'], 'buy', CONFIG['buyQty'], price - (CONFIG['interval'] * i)))
-                            exec_queue.append((CREATE_LIMIT_ORDER, CONFIG['market'], 'sell', CONFIG['sellQty'], price + (CONFIG['interval'] * i)))
+                            logging.info(f'Market buying {buyQty} {market} around {price} $')
+                            executions.append((CREATE_MARKET_ORDER, market, 'buy', buyQty))
+                        interval = price / 100 * CONFIG['gridStep']
+                        margin = interval * 0.05
+                        for i in range(1, gridSize + 1):
+                            executions.append((CREATE_LIMIT_ORDER, market, 'buy', buyQty, price - (interval * i)))
+                            executions.append((CREATE_LIMIT_ORDER, market, 'sell', sellQty, price + (interval * i)))
             time.sleep(0.05)

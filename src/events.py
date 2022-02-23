@@ -8,4 +8,11 @@ REMOVE_ALL_LIMIT_ORDERS = 'remove_all_limit_orders'
 GRID_UPDATE = 'grid_update'
 GRID_INIT = 'grid_init'
 GRID_RESET = 'grid_reset'
-GRID_INIT_COMPLETED = 'grid_init_completed'
+
+def fire_event_asap(deque, event):
+    if (event not in deque):
+        deque.appendleft(event)
+
+def fire_event(deque, event):
+    if (event not in deque):
+        deque.append(event)
