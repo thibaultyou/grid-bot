@@ -12,4 +12,6 @@ ADD main.py .
 
 ADD .env .
 
-CMD [ "python3", "main.py" ]
+RUN mkdir logs
+
+CMD [ "python3", "-u", "main.py" ]

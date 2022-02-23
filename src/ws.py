@@ -24,8 +24,6 @@ class WebsocketWorker:
         self.send(json.dumps(message))
 
     def _connect(self, event_queue):
-        assert not self.ws, "ws should be closed before attempting to connect"
-
         self.ws = WebSocketApp(
             'wss://ftx.com/ws/',
             on_open=self._wrap_callback(self.on_open),
@@ -55,7 +53,7 @@ class WebsocketWorker:
                     else:
                         f(ws, *args, **kwargs)
                 except Exception as e:
-                    raise Exception(f'Error running websocket callback: {e}')
+                    raise Exception(f'Error running FTX websocket callback: {e}')
         return wrapped_f
 
     def _run_websocket(self, ws):
@@ -63,12 +61,11 @@ class WebsocketWorker:
             ws.run_forever(ping_interval=15, ping_timeout=14,
                     ping_payload=json.dumps({'op': 'ping'}))
         except Exception as e:
-            raise Exception(f'Unexpected error while running websocket: {e}')
+            raise Exception(f'Unexpected error while running FTX websocket: {e}')
         finally:
             self._reconnect(ws)
 
     def _reconnect(self, ws):
-        assert ws is not None, '_reconnect should only be called with an existing ws'
         if ws is self.ws:
             self.ws = None
             ws.close()
@@ -84,7 +81,7 @@ class WebsocketWorker:
                     return
 
     def on_open(self, ws):
-        print('Socket opened')
+        print('FTX websocket opened')
         ts = int(time.time() * 1000)
         ws.send(json.dumps({
             'op': 'login',
@@ -104,11 +101,11 @@ class WebsocketWorker:
             event_queue.append((GRID_UPDATE, message['data']))
 
     def _on_close(self, ws):
-        print('Socket closed')
+        print('FTX websocket closed')
         self._reconnect(ws)
 
     def _on_error(self, ws, error):
-        print(f'Socket error : {error}')
+        print(f'FTX websocket error: {error}')
         self._reconnect(ws)
 
     def reconnect(self) -> None:

@@ -11,6 +11,8 @@ class PositionsWorker:
         t.start()
     
     def _run(self, exec_queue):
+        exec = (POSITION, CONFIG['market'])
         while True:
-            exec_queue.append((POSITION, CONFIG['market']))
+            if (exec not in exec_queue):
+                exec_queue.append(exec)
             time.sleep(5)

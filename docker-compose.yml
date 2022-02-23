@@ -3,3 +3,5 @@ services:
   grid-service:
     build: .
     restart: unless-stopped
+    volumes:
+      - ./logs:/code/logs

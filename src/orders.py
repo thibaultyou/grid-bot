@@ -11,6 +11,8 @@ class OrdersWorker:
         t.start()
     
     def _run(self, exec_queue):
+        exec = (ORDERS, CONFIG['market'])
         while True:
-            exec_queue.append((ORDERS, CONFIG['market']))
-            time.sleep(8)
+            if (exec not in exec_queue):
+                exec_queue.append(exec)
+            time.sleep(5)

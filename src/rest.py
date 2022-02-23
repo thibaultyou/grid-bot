@@ -1,3 +1,4 @@
+import logging
 import time
 from threading import Thread
 from src.events import CREATE_LIMIT_ORDER, CREATE_MARKET_ORDER, GRID_INIT, GRID_INIT_COMPLETED, GRID_RESET, ORDERS, POSITION, REMOVE_ALL_LIMIT_ORDERS, REMOVE_LIMIT_ORDER, REMOVE_MARKET_ORDER
@@ -13,11 +14,12 @@ class RestWorker:
     def _run(self, exec_queue, event_queue):
         while True:
             if (len(exec_queue)):
+                # print(exec_queue)
                 ex = exec_queue.popleft()
                 try:
-                    if (ex[0] == GRID_INIT_COMPLETED):
-                        event_queue.append((GRID_INIT_COMPLETED,))
-                    elif (len(ex) == 2 and ex[0] == ORDERS):
+                    # if (ex[0] == GRID_INIT_COMPLETED):
+                    #     event_queue.append((GRID_INIT_COMPLETED,))
+                    if (len(ex) == 2 and ex[0] == ORDERS):
                         orders = get_session().fetchOpenOrders(ex[1])
                         event_queue.append((ORDERS, orders))
                     elif (len(ex) == 2 and ex[0] == POSITION):
@@ -62,4 +64,5 @@ class RestWorker:
                         event_queue.append((REMOVE_ALL_LIMIT_ORDERS))
                     time.sleep(0.25 / len(SESSIONS))
                 except Exception as e:
-                    print(f'FtxRestWorker exception : {e}')
+                    logging.error(f'FtxRestWorker exception: {e}')
+            time.sleep(0.05)
