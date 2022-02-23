@@ -13,4 +13,4 @@ class OrdersWorker:
     def _run(self, exec_queue):
         while True:
             exec_queue.append((ORDERS, CONFIG['market']))
-            time.sleep(10)
+            time.sleep(8)

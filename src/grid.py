@@ -47,17 +47,17 @@ class GridWorker:
                             if ('price' in minBuy and lastOrder and 'price' in lastOrder and lastOrder['price']):
                                 minBuyOrderPrice = float(minBuy['price'])
                                 # TODO improve
-                                if (isInitComplete):
-                                    # Adding extreme buy orders
-                                    if (buyOrdersCount < CONFIG['gridSize']):
-                                        for i in range(CONFIG['gridSize'] - buyOrdersCount):
-                                            print('+ + added min buy')
-                                            exec_queue.append((CREATE_LIMIT_ORDER, CONFIG['market'], 'buy', CONFIG['buyQty'], minBuyOrderPrice - (CONFIG['interval']) * (i + 1)))
-                                    # Removing extreme buy orders
-                                    elif (buyOrdersCount > CONFIG['gridSize'] and 'id' in minBuy):
-                                        for i in range(buyOrdersCount - CONFIG['gridSize']):
-                                            print('- + removed min buy')
-                                            exec_queue.append((REMOVE_LIMIT_ORDER, buyOrders[i]['id']))
+                                # if (isInitComplete):
+                                # Adding extreme buy orders
+                                if (buyOrdersCount < CONFIG['gridSize']):
+                                    for i in range(CONFIG['gridSize'] - buyOrdersCount):
+                                        print('+ + added min buy')
+                                        exec_queue.append((CREATE_LIMIT_ORDER, CONFIG['market'], 'buy', CONFIG['buyQty'], minBuyOrderPrice - (CONFIG['interval']) * (i + 1)))
+                                # Removing extreme buy orders
+                                elif (buyOrdersCount > CONFIG['gridSize'] and 'id' in minBuy):
+                                    for i in range(buyOrdersCount - CONFIG['gridSize']):
+                                        print('- + removed min buy')
+                                        exec_queue.append((REMOVE_LIMIT_ORDER, buyOrders[i]['id']))
                                 lastSeenBuyOrder = None
                                 for bo in buyOrders:
                                     if lastSeenBuyOrder:
@@ -78,17 +78,17 @@ class GridWorker:
                             if ('price' in maxSell and lastOrder and 'price' in lastOrder and lastOrder['price']):
                                 maxSellOrderPrice = float(maxSell['price'])
                                 # TODO improve
-                                if (isInitComplete):
-                                    # Adding extreme sell orders
-                                    if (sellOrdersCount < CONFIG['gridSize']):
-                                        for i in range(CONFIG['gridSize'] - sellOrdersCount):
-                                            print('+ - added max sell')
-                                            exec_queue.append((CREATE_LIMIT_ORDER, CONFIG['market'], 'sell', CONFIG['sellQty'], maxSellOrderPrice + (CONFIG['interval']) * (i + 1)))
-                                    # Removing extreme sell orders
-                                    elif (sellOrdersCount > CONFIG['gridSize'] and 'id' in maxSell):
-                                        for i in range(sellOrdersCount - CONFIG['gridSize']):
-                                            print('- - remove max sell')
-                                            exec_queue.append((REMOVE_LIMIT_ORDER, maxSell['id']))
+                                # if (isInitComplete):
+                                # Adding extreme sell orders
+                                if (sellOrdersCount < CONFIG['gridSize']):
+                                    for i in range(CONFIG['gridSize'] - sellOrdersCount):
+                                        print('+ - added max sell')
+                                        exec_queue.append((CREATE_LIMIT_ORDER, CONFIG['market'], 'sell', CONFIG['sellQty'], maxSellOrderPrice + (CONFIG['interval']) * (i + 1)))
+                                # Removing extreme sell orders
+                                elif (sellOrdersCount > CONFIG['gridSize'] and 'id' in maxSell):
+                                    for i in range(sellOrdersCount - CONFIG['gridSize']):
+                                        print('- - remove max sell')
+                                        exec_queue.append((REMOVE_LIMIT_ORDER, maxSell['id']))
                                 lastSeenSellOrder = None
                                 for so in sellOrders:
                                     if lastSeenSellOrder:

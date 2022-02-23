@@ -3,7 +3,7 @@ from threading import Lock
 import ccxt
 
 lock = Lock()
-lastIdUsed = 0
+
 SESSIONS = [ccxt.ftx({
     'apiKey': os.getenv('FTX_KEY_1'),
     'secret': os.getenv('FTX_SECRET_1'),
@@ -22,10 +22,10 @@ SESSIONS = [ccxt.ftx({
     'headers': {'FTX-SUBACCOUNT': os.getenv('FTX_SUBACCOUNT')},
 })]
 
+lastIdUsed = 0
+
 def get_session():
     global lastIdUsed
-    if not lastIdUsed:
-        lastIdUsed = 0
     with lock:
         if (lastIdUsed == len(SESSIONS) - 1):
             lastIdUsed = 0
