@@ -7,7 +7,6 @@ REMOVE_LIMIT_ORDER = 'remove_limit_order'
 REMOVE_ALL_LIMIT_ORDERS = 'remove_all_limit_orders'
 GRID_UPDATE = 'grid_update'
 GRID_INIT = 'grid_init'
-GRID_INIT_DONE = 'grid_init_done'
 GRID_RESET = 'grid_reset'
 
 def fire_event_asap(deque, event):

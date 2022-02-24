@@ -2,7 +2,7 @@ import logging
 import time
 from threading import Thread
 from src.config import CONFIG
-from src.events import CREATE_LIMIT_ORDER, CREATE_MARKET_ORDER, GRID_INIT_DONE, GRID_INIT, GRID_RESET, GRID_UPDATE, ORDERS, POSITION, REMOVE_ALL_LIMIT_ORDERS, REMOVE_LIMIT_ORDER, REMOVE_MARKET_ORDER, fire_event, fire_event_asap
+from src.events import CREATE_LIMIT_ORDER, CREATE_MARKET_ORDER, GRID_INIT, GRID_RESET, GRID_UPDATE, ORDERS, POSITION, REMOVE_ALL_LIMIT_ORDERS, REMOVE_LIMIT_ORDER, REMOVE_MARKET_ORDER, fire_event, fire_event_asap
 from src.sessions import get_session
 
 
@@ -24,15 +24,11 @@ class GridWorker:
         interval = 0
         margin = 0
         lastOrder = None
-        isResettingGrid = False
         while True:
             if (len(events)):
                 event = events.popleft()
                 eventType = event[0]
-                if (eventType == GRID_INIT_DONE):
-                    isResettingGrid = False
-                    logging.info(f'{market} grid init done')
-                elif (eventType == ORDERS):
+                if (eventType == ORDERS):
                     orders = event[1]
                     if (position and 'longOrderSize' in position and 'shortOrderSize' in position):
                         # Refresh current orders state
@@ -141,34 +137,31 @@ class GridWorker:
                                 logging.info(f'Sold {filledSize} {market} at {orderPrice} $, current position is {amount} {market}')
                                 executions.appendleft((CREATE_LIMIT_ORDER, market, 'buy', buyQty, orderPrice - interval))
                 elif (eventType == GRID_INIT):
-                    if not isResettingGrid:
-                        isResettingGrid = True
-                        logging.info(f'Initializing {market} grid')
-                        ticker = event[1]
-                        position = event[2]
-                        events.clear()
-                        executions.clear()
-                        if ('ask' in ticker and 'bid' in ticker):
-                            executions.appendleft((REMOVE_ALL_LIMIT_ORDERS, market))
-                            if len(event) == 3:
-                                if (position and 'netSize' in position and float(position["netSize"]) > 0):
-                                    logging.info(f'Market selling {position["netSize"]} {market}')
-                                executions.appendleft((REMOVE_MARKET_ORDER, market))
-                            time.sleep(3)  # Let FTX remove all pending orders
-                            # TODO improve
-                            if (position and 'netSize' in position):
-                                amount = float(position['netSize'])
-                            else:
-                                amount = 0
-                            lastOrder = None
-                            price = (ticker['ask'] + ticker['bid']) / 2
-                            if len(event) == 3:
-                                logging.info(f'Market buying {buyQty} {market} around {price} $')
-                                executions.append((CREATE_MARKET_ORDER, market, 'buy', buyQty))
-                            interval = price / 100 * CONFIG['gridStep']
-                            margin = interval * 0.05
-                            for i in range(1, gridSize + 1):
-                                executions.append((CREATE_LIMIT_ORDER, market, 'buy', buyQty, price - (interval * i)))
-                                executions.append((CREATE_LIMIT_ORDER, market, 'sell', sellQty, price + (interval * i)))
-                            events.append((GRID_INIT_DONE, market))
+                    logging.info(f'Initializing {market} grid')
+                    ticker = event[1]
+                    position = event[2]
+                    events.clear()
+                    executions.clear()
+                    if ('ask' in ticker and 'bid' in ticker):
+                        executions.appendleft((REMOVE_ALL_LIMIT_ORDERS, market))
+                        if len(event) == 3:
+                            if (position and 'netSize' in position and float(position["netSize"]) > 0):
+                                logging.info(f'Market selling {position["netSize"]} {market}')
+                            executions.appendleft((REMOVE_MARKET_ORDER, market))
+                        time.sleep(3)  # Let FTX remove all pending orders
+                        # TODO improve
+                        if (position and 'netSize' in position):
+                            amount = float(position['netSize'])
+                        else:
+                            amount = 0
+                        lastOrder = None
+                        price = (ticker['ask'] + ticker['bid']) / 2
+                        if len(event) == 3:
+                            logging.info(f'Market buying {buyQty} {market} around {price} $')
+                            executions.append((CREATE_MARKET_ORDER, market, 'buy', buyQty))
+                        interval = price / 100 * CONFIG['gridStep']
+                        margin = interval * 0.05
+                        for i in range(1, gridSize + 1):
+                            executions.append((CREATE_LIMIT_ORDER, market, 'buy', buyQty, price - (interval * i)))
+                            executions.append((CREATE_LIMIT_ORDER, market, 'sell', sellQty, price + (interval * i)))
             time.sleep(0.05)
