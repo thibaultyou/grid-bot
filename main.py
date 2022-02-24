@@ -28,7 +28,7 @@ if __name__ == '__main__':
     pw = PositionsWorker()
     ow = OrdersWorker()
     gw.start(executions, events)
-    ws.start(events)
+    ws.connect(events)
     rw.start(executions, events)
     pw.start(executions)
     ow.start(executions)
