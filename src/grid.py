@@ -160,7 +160,7 @@ class GridWorker:
                             logging.info(f'Market buying {buyQty} {market} around {price} $')
                             executions.append((CREATE_MARKET_ORDER, market, 'buy', buyQty))
                         interval = price / 100 * CONFIG['gridStep']
-                        margin = interval * 0.05
+                        margin = interval * 0.25
                         for i in range(1, gridSize + 1):
                             executions.append((CREATE_LIMIT_ORDER, market, 'buy', buyQty, price - (interval * i)))
                             executions.append((CREATE_LIMIT_ORDER, market, 'sell', sellQty, price + (interval * i)))
