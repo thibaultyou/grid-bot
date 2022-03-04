@@ -18,7 +18,7 @@ executions = collections.deque()
 events = collections.deque()
 
 if __name__ == '__main__':
-    logging.basicConfig(filename=f'./logs/{CONFIG["market"]}.log', format='%(asctime)s %(message)s', encoding='utf-8', level=logging.INFO)
+    logging.basicConfig(handlers=[logging.FileHandler(filename=f'./logs/{CONFIG["market"]}.log', encoding='utf-8', mode='a')], format='%(asctime)s %(message)s', level=logging.INFO)
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(f'Starting service with following config:\n{format_log(CONFIG)}')
     # Workers
