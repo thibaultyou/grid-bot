@@ -26,6 +26,8 @@ class RestWorker:
                         for position in positions:
                             if ('info' in position and 'future' in position['info'] and position['info']['future'] == ex[1]):
                                 events.append((POSITION, position['info']))
+                        if (len(positions) == 0):
+                            events.append((POSITION, None))
                     elif (len(ex) == 4 and ex[0] == CREATE_MARKET_ORDER):
                         order = get_session().createOrder(
                             ex[1], 'market', ex[2], ex[3])
