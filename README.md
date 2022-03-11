@@ -37,37 +37,64 @@ sudo apt install docker-compose -y
 
 ## Usage
 
-Create _.env_ file:
+Create _.env.btc_ env file for BTC (as example):
 
 ```sh
 cd grid-bot
-cp .env.sample .env
+cp .env.sample .env.btc
 ```
 
-Edit _.env_ file:
+Edit _.env.btc_ file:
 
 ```sh
-nano .env
+nano .env.btc
 ```
 
-Adjust settings to your needs, add 4 different API keys with secrets to allow credentials rotations (all the variables are needed):
+Adjust settings to your needs like the following example, add 4 different API keys with secrets to allow credentials rotations (all the variables are needed):
 
 ```ts
-MARKET=XXX-PERP
-BASE_ORDER_SIZE=25
+MARKET=BTC-PERP
+BASE_ORDER_SIZE=10
 BUYING_RATIO=1
-SELLING_RATIO=1.04
-GRID_SIZE=24
-GRID_STEP=0.5
-FTX_SUBACCOUNT=YOUR_FTX_SUBACCOUNT_NAME
-FTX_KEY_1=YOUR_SUBACCCOUNT_FTX_KEY_1
-FTX_SECRET_1=YOUR_SUBACCCOUNT_FTX_SECRET_1
-FTX_KEY_2=YOUR_SUBACCCOUNT_FTX_KEY_2
-FTX_SECRET_2=YOUR_SUBACCCOUNT_FTX_SECRET_2
-FTX_KEY_3=YOUR_SUBACCCOUNT_FTX_KEY_3
-FTX_SECRET_3=YOUR_SUBACCCOUNT_FTX_SECRET_3
-FTX_KEY_4=YOUR_SUBACCCOUNT_FTX_KEY_4
-FTX_SECRET_4=YOUR_SUBACCCOUNT_FTX_SECRET_4
+SELLING_RATIO=1.1
+GRID_SIZE=5
+GRID_STEP=1
+FTX_SUBACCOUNT=BTC
+FTX_KEY_1=kEy_1
+FTX_SECRET_1=SeCrEt_1
+FTX_KEY_2=kEy_2
+FTX_SECRET_2=SeCrEt_2
+FTX_KEY_3=kEy_3
+FTX_SECRET_3=SeCrEt_3
+FTX_KEY_4=kEy_4
+FTX_SECRET_4=SeCrEt_4
+```
+
+Edit _docker-compose.yml_ file:
+
+```sh
+nano docker-compose.yml
+```
+
+Adjust to your needs, for example two grids here with BTC and XRP (don't forget to create corresponding env files):
+
+```yml
+version: '3'
+services:
+  btc:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./logs:/code/logs
+      - ./.env.btc:/code/.env # you need this to bind your env file to this grid instance
+
+  # you can add as many instance you want as long you have different API keys between each and enough RAM on your server
+  xrp:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./logs:/code/logs
+      - ./.env.xrp:/code/.env
 ```
 
 > Right now only futures are supported by this tool
@@ -78,7 +105,13 @@ Run:
 sudo docker-compose up --build -d
 ```
 
-> To update your config later, edit the config file again and restart the grid bot with the command above
+If you have issues updating your config you can recreate the instances:
+
+```sh
+sudo docker-compose stop
+sudo docker-compose rm
+sudo docker-compose up --build -d
+```
 
 Monitor:
 

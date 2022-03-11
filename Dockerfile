@@ -10,8 +10,6 @@ ADD src ./src
 
 ADD main.py .
 
-ADD .env .
-
 RUN mkdir logs
 
 CMD [ "python3", "-u", "main.py" ]

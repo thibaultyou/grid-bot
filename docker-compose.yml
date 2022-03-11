@@ -1,7 +1,8 @@
 version: '3'
 services:
-  grid-service:
+  btc:
     build: .
     restart: unless-stopped
     volumes:
       - ./logs:/code/logs
+      - ./.env.btc:/code/.env
