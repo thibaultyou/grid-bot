@@ -44,8 +44,9 @@ class GridWorker:
                             fire_event_asap(executions, (GRID_RESET, market))
                         else:
                             # Handle buy orders
-                            buys.sort(key=lambda k: k['price'])
+                            buys.sort(key=lambda k: float(k['price']))
                             minBuy = buys[0]
+                            
                             if ('price' in minBuy and lastOrder and 'price' in lastOrder and lastOrder['price']):
                                 minBuyPrice = float(minBuy['price'])
                                 # Adding extreme buy orders
@@ -75,7 +76,7 @@ class GridWorker:
                                             fire_event(executions, (REMOVE_LIMIT_ORDER, bo['id']))
                                     lastBuy = bo
                             # Handle sell orders
-                            sells.sort(key=lambda k: k['price'])
+                            sells.sort(key=lambda k: float(k['price']))
                             maxSell = sells[len(sells) - 1]
                             if ('price' in maxSell and lastOrder and 'price' in lastOrder and lastOrder['price']):
                                 maxSellPrice = float(maxSell['price'])
@@ -105,6 +106,23 @@ class GridWorker:
                                             logging.info(f'Removing misplaced {market} sell order at {lastSellPrice} $')
                                             fire_event(executions, (REMOVE_LIMIT_ORDER, so['id']))
                                     lastSell = so
+
+                        # Adding missing close orders
+                        # maxBuy = buys[len(buys) - 1]
+                        # minSell = sells[0]
+                        # if ('price' in maxBuy and 'price' in minSell):
+                        #     diff = minSell - maxBuy
+                        #     if (diff > interval * 2 + margin):
+                        #         print(f'A close order is missing {diff}')
+                        #         if ('ask' in ticker and 'bid' in ticker):
+                        #             price = (ticker['ask'] + ticker['bid']) / 2
+                        #             if (minSell['price'] - price > price - maxBuy['price']):
+                        #                 print('Adding missing sell order')
+                        #                 fire_event_asap(executions, (CREATE_LIMIT_ORDER, market, 'sell', sellQty, minSell['price'] - interval))
+                        #             else:
+                        #                 print('Adding missing buy order')
+                        #                 fire_event_asap(executions, (CREATE_LIMIT_ORDER, market, 'buy', buyQty, maxBuy['price'] + interval))
+
                 elif (eventType == CREATE_MARKET_ORDER):
                     if ('amount' in event[1]):
                         amount = amount + event[1]['amount']
@@ -160,7 +178,7 @@ class GridWorker:
                             logging.info(f'Market buying {buyQty} {market} around {price} $')
                             executions.append((CREATE_MARKET_ORDER, market, 'buy', buyQty))
                         interval = price / 100 * CONFIG['gridStep']
-                        margin = interval * 0.25
+                        margin = interval * 0.1
                         for i in range(1, gridSize + 1):
                             executions.append((CREATE_LIMIT_ORDER, market, 'buy', buyQty, price - (interval * i)))
                             executions.append((CREATE_LIMIT_ORDER, market, 'sell', sellQty, price + (interval * i)))
