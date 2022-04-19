@@ -23,6 +23,7 @@ class GridWorker:
         amount = 0
         interval = 0
         margin = 0
+        missingOrderLoopCounter = 0
         lastOrder = None
         while True:
             if (len(events)):
@@ -106,23 +107,25 @@ class GridWorker:
                                             logging.info(f'Removing misplaced {market} sell order at {lastSellPrice} $')
                                             fire_event(executions, (REMOVE_LIMIT_ORDER, so['id']))
                                     lastSell = so
-
-                        # Adding missing close orders
-                        # maxBuy = buys[len(buys) - 1]
-                        # minSell = sells[0]
-                        # if ('price' in maxBuy and 'price' in minSell):
-                        #     diff = minSell - maxBuy
-                        #     if (diff > interval * 2 + margin):
-                        #         print(f'A close order is missing {diff}')
-                        #         if ('ask' in ticker and 'bid' in ticker):
-                        #             price = (ticker['ask'] + ticker['bid']) / 2
-                        #             if (minSell['price'] - price > price - maxBuy['price']):
-                        #                 print('Adding missing sell order')
-                        #                 fire_event_asap(executions, (CREATE_LIMIT_ORDER, market, 'sell', sellQty, minSell['price'] - interval))
-                        #             else:
-                        #                 print('Adding missing buy order')
-                        #                 fire_event_asap(executions, (CREATE_LIMIT_ORDER, market, 'buy', buyQty, maxBuy['price'] + interval))
-
+                            # Adding missing orders near price line
+                            maxBuy = buys[len(buys) - 1]
+                            minSell = sells[0]
+                            if ('price' in maxBuy and 'price' in minSell):
+                                diff = float(minSell['price']) - float(maxBuy['price'])
+                                if (diff > interval * 2 + margin):
+                                    missingOrderLoopCounter += 1
+                                    # Filling if not filled during 3 checking loops (15 seconds)
+                                    if (missingOrderLoopCounter >= 3 and 'ask' in ticker and 'bid' in ticker):
+                                        price = (ticker['ask'] + ticker['bid']) / 2
+                                        if (float(minSell['price']) - price > price - float(maxBuy['price'])):
+                                            orderPrice = float(minSell['price']) - interval
+                                            print(f'Adding missing {market} sell order at {orderPrice} $')
+                                            fire_event_asap(executions, (CREATE_LIMIT_ORDER, market, 'sell', sellQty, orderPrice))
+                                        else:
+                                            orderPrice =  float(maxBuy['price']) + interval
+                                            print(f'Adding missing {market} buy order at {orderPrice} $')
+                                            fire_event_asap(executions, (CREATE_LIMIT_ORDER, market, 'buy', buyQty, orderPrice))
+                                        missingOrderLoopCounter = 0
                 elif (eventType == CREATE_MARKET_ORDER):
                     if ('amount' in event[1]):
                         amount = amount + event[1]['amount']
@@ -149,11 +152,13 @@ class GridWorker:
                             if (order['side'] == 'buy'):
                                 amount = amount + filledSize
                                 logging.info(f'Bought {filledSize} {market} at {orderPrice} $, current position is {amount} {market}')
-                                executions.appendleft((CREATE_LIMIT_ORDER, market, 'sell', sellQty, orderPrice + interval))
+                                fire_event_asap(executions, (CREATE_LIMIT_ORDER, market, 'sell', sellQty, orderPrice + interval))
                             elif (order['side'] == 'sell'):
                                 amount = amount - filledSize
                                 logging.info(f'Sold {filledSize} {market} at {orderPrice} $, current position is {amount} {market}')
-                                executions.appendleft((CREATE_LIMIT_ORDER, market, 'buy', buyQty, orderPrice - interval))
+                                fire_event_asap(executions, (CREATE_LIMIT_ORDER, market, 'buy', buyQty, orderPrice - interval))
+                        # Resetting checking loops counter to avoid duplicated orders
+                        missingOrderLoopCounter = 0
                 elif (eventType == GRID_INIT):
                     logging.info(f'Initializing {market} grid')
                     ticker = event[1]
@@ -161,11 +166,11 @@ class GridWorker:
                     events.clear()
                     executions.clear()
                     if ('ask' in ticker and 'bid' in ticker):
-                        executions.appendleft((REMOVE_ALL_LIMIT_ORDERS, market))
+                        fire_event_asap(executions, (REMOVE_ALL_LIMIT_ORDERS, market))
                         if len(event) == 3:
                             if (position and 'netSize' in position and float(position["netSize"]) > 0):
                                 logging.info(f'Market selling {position["netSize"]} {market}')
-                            executions.appendleft((REMOVE_MARKET_ORDER, market))
+                            fire_event_asap(executions, (REMOVE_MARKET_ORDER, market))
                         time.sleep(3)  # Let FTX remove all pending orders
                         # TODO improve
                         if (position and 'netSize' in position):
@@ -176,10 +181,10 @@ class GridWorker:
                         price = (ticker['ask'] + ticker['bid']) / 2
                         if len(event) == 3:
                             logging.info(f'Market buying {buyQty} {market} around {price} $')
-                            executions.append((CREATE_MARKET_ORDER, market, 'buy', buyQty))
+                            fire_event(executions, (CREATE_MARKET_ORDER, market, 'buy', buyQty))
                         interval = price / 100 * CONFIG['gridStep']
                         margin = interval * 0.1
                         for i in range(1, gridSize + 1):
-                            executions.append((CREATE_LIMIT_ORDER, market, 'buy', buyQty, price - (interval * i)))
-                            executions.append((CREATE_LIMIT_ORDER, market, 'sell', sellQty, price + (interval * i)))
+                            fire_event(executions, (CREATE_LIMIT_ORDER, market, 'buy', buyQty, price - (interval * i)))
+                            fire_event(executions, (CREATE_LIMIT_ORDER, market, 'sell', sellQty, price + (interval * i)))
             time.sleep(0.05)
